@@ -6,8 +6,10 @@
 # The package replaces the distro `zed` (provides/conflicts) so the PKGBUILD
 # installs the editor as /usr/bin/zed with its companion binary at
 # /usr/lib/zed/zed-editor, matching the layout documented in
-# docs/src/development/linux.md. The cargo invocation mirrors
-# script/bundle-linux (same bundle config, linker, and release flags).
+# docs/src/development/linux.md. The cargo invocation mirrors the AUR
+# zed-git package (plain release build with thin LTO) rather than
+# script/bundle-linux, whose ld.lld plus --icf=safe combination breaks
+# the WebRTC link on current Arch toolchains.
 #
 # Because the source is pinned to the current commit via a `git+file://`
 # URL, the build is offline and reproducible, but it also means uncommitted
@@ -139,29 +141,39 @@ license=('GPL-3.0-or-later')
 provides=('zed')
 conflicts=('zed')
 depends=(
-    alsa-lib fontconfig gcc-libs glibc glib2 hicolor-icon-theme
-    libgit2 libva libxcb libxkbcommon-x11 openssl pipewire
-    sqlite vulkan-icd-loader wayland xdg-desktop-portal zstd
+    alsa-lib curl fontconfig gcc-libs glibc glib2 hicolor-icon-theme
+    libgit2 libva libx11 libxcb libxkbcommon libxkbcommon-x11 openssl
+    pipewire sqlite vulkan-icd-loader wayland xdg-desktop-portal zstd
 )
-makedepends=(git rust clang lld cmake jq)
+makedepends=(git rust clang cmake protobuf vulkan-headers)
 source=("$pkgname::git+file://__REPO_ROOT__#commit=__COMMIT__")
 sha256sums=('SKIP')
 
 build() {
     cd "$pkgname"
 
-    for tool in cargo rustc clang jq; do
+    for tool in cargo rustc protoc; do
         if ! command -v "$tool" >/dev/null 2>&1; then
             echo "Required build tool not found: $tool" >&2
             exit 1
         fi
     done
 
-    # bundle-linux refuses RUSTFLAGS from makepkg.conf; the release flags
-    # live in .cargo/bundle-config.toml instead.
-    unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
-
-    export ZED_BUNDLE=true
+    # Release tuning mirrored from the AUR zed-git package, which is the
+    # proven way to build this source on Arch. Notably this uses the
+    # default linker: script/bundle-linux's ld.lld plus --icf=safe breaks
+    # the WebRTC lazy-load trampolines at link time on current toolchains.
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_PROFILE_RELEASE_LTO=thin
+    export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
+    export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+    export ZSTD_SYS_USE_PKG_CONFIG=1
+    export PROTOC=/usr/bin/protoc
+    export PROTOC_INCLUDE=/usr/include
+    CFLAGS+=' -ffat-lto-objects'
+    CXXFLAGS+=' -ffat-lto-objects'
+    RUSTFLAGS+=" --remap-path-prefix $PWD=/"
     export RELEASE_VERSION="__VERSION__"
     export ZED_UPDATE_EXPLANATION="Managed by pacman ($pkgname); rebuild with script/bundle-arch to update."
 
@@ -175,22 +187,13 @@ build() {
         exit 1
     fi
 
-    export CC="${CC:-$(command -v clang)}"
-    lld=${LLD:-$("$CC" -print-prog-name=ld.lld)}
-    if [[ "$lld" != /* || ! -x "$lld" ]]; then
-        echo "Bundling requires an absolute executable linker path; set LLD (e.g. LLD=/usr/bin/ld.lld)." >&2
-        exit 1
-    fi
-
-    # Same invocation as script/bundle-linux, minus --target (native build).
     # remote_server is intentionally not built here; this is a client-only
     # package. See script/bundle-linux for server artifacts.
-    cargo --config .cargo/bundle-config.toml rustc --release \
-        --package zed --bin zed -- \
-        -C linker="$CC" -C llvm-args=-addrsig \
-        -C link-arg=-fuse-ld=lld -C link-arg=--ld-path="$lld" \
-        -C link-arg=-Wl,--icf=safe
-    cargo --config .cargo/bundle-config.toml build --release --package cli
+    cargo build --release --frozen --package zed --package cli
+
+    target/release/cli --completions bash >completions.bash
+    target/release/cli --completions fish >completions.fish
+    target/release/cli --completions zsh >completions.zsh
 }
 
 package() {
@@ -214,6 +217,13 @@ package() {
 
     install -Dm644 assets/licenses.md \
         "$pkgdir/usr/share/licenses/$pkgname/licenses.md"
+
+    install -Dm644 completions.bash \
+        "$pkgdir/usr/share/bash-completion/completions/zed"
+    install -Dm644 completions.fish \
+        "$pkgdir/usr/share/fish/vendor_completions.d/zed.fish"
+    install -Dm644 completions.zsh \
+        "$pkgdir/usr/share/zsh/site-functions/_zed"
 }
 PKGBUILD_EOF
 
