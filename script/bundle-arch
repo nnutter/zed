@@ -166,7 +166,14 @@ build() {
     export ZED_UPDATE_EXPLANATION="Managed by pacman ($pkgname); rebuild with script/bundle-arch to update."
 
     # Generate the licenses first, so they can be baked into the binaries.
-    ./script/generate-licenses
+    # generate-licenses aborts when cargo-about writes to stderr but
+    # discards that output, so rerun cargo-about bare on failure to show it.
+    if ! ./script/generate-licenses; then
+        echo "generate-licenses failed; rerunning cargo-about directly to show its stderr:"
+        cargo about generate --fail -c script/licenses/zed-licenses.toml \
+            script/licenses/template.md.hbs >/dev/null
+        exit 1
+    fi
 
     export CC="${CC:-$(command -v clang)}"
     lld=${LLD:-$("$CC" -print-prog-name=ld.lld)}
