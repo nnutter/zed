@@ -1,8 +1,7 @@
 use gh_workflow::*;
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 
 use crate::tasks::workflows::{
-    extension_bump::compare_versions,
     run_tests::{
         RunContext, fetch_ts_query_ls, orchestrate_for_extension, run_ts_query_ls, tests_pass,
     },
@@ -132,6 +131,39 @@ fn check_rust() -> NamedJob {
         .add_step(run_nextest(&package_name));
 
     named::job(job)
+}
+
+const VERSION_CHECK: &str =
+    r#"sed -n 's/^version = \"\(.*\)\"/\1/p' < extension.toml | tr -d '[:space:]'"#;
+
+/// Compares the current and previous commit and checks whether versions changed inbetween.
+fn compare_versions() -> (Step<Run>, StepOutput, StepOutput) {
+    let check_needs_bump = named::bash(formatdoc! {
+    r#"
+        CURRENT_VERSION="$({VERSION_CHECK})"
+
+        if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            PR_FORK_POINT="$(git merge-base origin/main HEAD)"
+            git checkout "$PR_FORK_POINT"
+        else
+            git checkout "$(git log -1 --format=%H)"~1
+        fi
+
+        PARENT_COMMIT_VERSION="$({VERSION_CHECK})"
+
+        [[ "$CURRENT_VERSION" == "$PARENT_COMMIT_VERSION" ]] && \
+            echo "version_changed=false" >> "$GITHUB_OUTPUT" || \
+            echo "version_changed=true" >> "$GITHUB_OUTPUT"
+
+        echo "current_version=${{CURRENT_VERSION}}" >> "$GITHUB_OUTPUT"
+        "#
+    })
+    .id("compare-versions-check");
+
+    let version_changed = StepOutput::new(&check_needs_bump, "version_changed");
+    let current_version = StepOutput::new(&check_needs_bump, "current_version");
+
+    (check_needs_bump, version_changed, current_version)
 }
 
 pub(crate) fn check_extension() -> NamedJob {

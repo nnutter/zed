@@ -158,7 +158,7 @@ jobs:
             false
         }
     - id: compare-versions-check
-      name: extension_bump::compare_versions
+      name: extension_tests::compare_versions
       run: |
         CURRENT_VERSION="$(sed -n 's/^version = \"\(.*\)\"/\1/p' < extension.toml | tr -d '[:space:]')"
 

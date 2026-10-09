@@ -1,9 +1,6 @@
 use std::{cell::RefCell, ops::Not};
 
-use gh_workflow::{
-    Concurrency, Env, Expression, Step, WorkflowCallInput, WorkflowCallSecret,
-    WorkflowDispatchInput,
-};
+use gh_workflow::{Concurrency, Env, Expression, Step, WorkflowCallInput};
 
 use crate::tasks::workflows::{runners::Platform, steps::NamedJob};
 
@@ -26,10 +23,6 @@ secret!(AZURE_SIGNING_CLIENT_ID);
 secret!(AZURE_SIGNING_CLIENT_SECRET);
 secret!(AZURE_SIGNING_TENANT_ID);
 secret!(CACHIX_AUTH_TOKEN);
-secret!(CLUSTER_NAME);
-secret!(DIGITALOCEAN_ACCESS_TOKEN);
-secret!(DIGITALOCEAN_SPACES_ACCESS_KEY);
-secret!(DIGITALOCEAN_SPACES_SECRET_KEY);
 secret!(GITHUB_TOKEN);
 secret!(MACOS_CERTIFICATE);
 secret!(MACOS_CERTIFICATE_PASSWORD);
@@ -39,15 +32,10 @@ secret!(ZED_CLOUD_PROVIDER_ADDITIONAL_MODELS_JSON);
 secret!(ZED_SENTRY_MINIDUMP_ENDPOINT);
 secret!(ZED_ZIPPY_APP_ID);
 secret!(ZED_ZIPPY_APP_PRIVATE_KEY);
-secret!(DISCORD_WEBHOOK_RELEASE_NOTES);
-secret!(WINGET_TOKEN);
-secret!(ZED_DEV_REVALIDATE_TOKEN);
 secret!(SLACK_WEBHOOK_WORKFLOW_FAILURES);
 secret!(R2_ACCOUNT_ID);
 secret!(R2_ACCESS_KEY_ID);
 secret!(R2_SECRET_ACCESS_KEY);
-secret!(CLOUDFLARE_API_TOKEN);
-secret!(CLOUDFLARE_ACCOUNT_ID);
 secret!(DOCS_AMPLITUDE_API_KEY);
 secret!(DOCS_CONSENT_IO_INSTANCE);
 
@@ -262,7 +250,6 @@ pub struct WorkflowInput {
     pub input_type: &'static str,
     pub name: &'static str,
     pub default: Option<String>,
-    pub description: Option<String>,
 }
 
 impl WorkflowInput {
@@ -271,33 +258,6 @@ impl WorkflowInput {
             input_type: "string",
             name,
             default,
-            description: None,
-        }
-    }
-
-    pub fn bool(name: &'static str, default: Option<bool>) -> Self {
-        Self {
-            input_type: "boolean",
-            name,
-            default: default.as_ref().map(ToString::to_string),
-            description: None,
-        }
-    }
-
-    pub fn description(mut self, description: impl ToString) -> Self {
-        self.description = Some(description.to_string());
-        self
-    }
-
-    pub fn input(&self) -> WorkflowDispatchInput {
-        WorkflowDispatchInput {
-            description: self
-                .description
-                .clone()
-                .unwrap_or_else(|| self.name.to_owned()),
-            required: self.default.is_none(),
-            input_type: self.input_type.to_owned(),
-            default: self.default.clone(),
         }
     }
 
@@ -322,44 +282,6 @@ impl std::fmt::Display for WorkflowInput {
 }
 
 impl serde::Serialize for WorkflowInput {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-pub(crate) struct WorkflowSecret {
-    pub name: &'static str,
-    description: String,
-    required: bool,
-}
-
-impl WorkflowSecret {
-    pub fn new(name: &'static str, description: impl ToString) -> Self {
-        Self {
-            name,
-            description: description.to_string(),
-            required: true,
-        }
-    }
-
-    pub fn secret_configuration(&self) -> WorkflowCallSecret {
-        WorkflowCallSecret {
-            description: self.description.clone(),
-            required: self.required,
-        }
-    }
-}
-
-impl std::fmt::Display for WorkflowSecret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "${{{{ secrets.{} }}}}", self.name)
-    }
-}
-
-impl serde::Serialize for WorkflowSecret {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,

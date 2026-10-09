@@ -1,6 +1,4 @@
-use gh_workflow::{
-    Event, Expression, Level, Permissions, Push, Run, Step, Use, Workflow, ctx::Context,
-};
+use gh_workflow::{Event, Expression, Level, Permissions, Push, Run, Step, Workflow, ctx::Context};
 use indoc::formatdoc;
 
 use crate::tasks::workflows::{
@@ -32,13 +30,11 @@ pub(crate) fn release() -> Workflow {
     let bundle = ReleaseBundleJobs {
         linux_aarch64: bundle_linux(
             Arch::AARCH64,
-            None,
             true,
             &[&linux_tests, &linux_clippy, &check_scripts],
         ),
         linux_x86_64: bundle_linux(
             Arch::X86_64,
-            None,
             true,
             &[&linux_tests, &linux_clippy, &check_scripts],
         ),
@@ -52,22 +48,15 @@ pub(crate) fn release() -> Workflow {
         ),
         mac_aarch64: bundle_mac(
             Arch::AARCH64,
-            None,
             &[&macos_tests, &macos_clippy, &check_scripts],
         ),
-        mac_x86_64: bundle_mac(
-            Arch::X86_64,
-            None,
-            &[&macos_tests, &macos_clippy, &check_scripts],
-        ),
+        mac_x86_64: bundle_mac(Arch::X86_64, &[&macos_tests, &macos_clippy, &check_scripts]),
         windows_aarch64: bundle_windows(
             Arch::AARCH64,
-            None,
             &[&windows_tests, &windows_clippy, &check_scripts],
         ),
         windows_x86_64: bundle_windows(
             Arch::X86_64,
-            None,
             &[&windows_tests, &windows_clippy, &check_scripts],
         ),
     };
@@ -172,18 +161,6 @@ impl ReleaseBundleJobs {
     }
 }
 
-pub(crate) fn create_sentry_release() -> Step<Use> {
-    named::uses(
-        "getsentry",
-        "action-release",
-        "526942b68292201ac6bbb99b9a0747d4abee354c", // v3
-    )
-    .add_env(("SENTRY_ORG", "zed-dev"))
-    .add_env(("SENTRY_PROJECT", "zed"))
-    .add_env(("SENTRY_AUTH_TOKEN", vars::SENTRY_AUTH_TOKEN))
-    .add_with(("environment", "production"))
-}
-
 pub(crate) const COMPLIANCE_REPORT_PATH: &str = "compliance-report-${GITHUB_REF_NAME}.md";
 pub(crate) const COMPLIANCE_REPORT_ARTIFACT_PATH: &str =
     "compliance-report-${{ github.ref_name }}.md";
@@ -193,16 +170,6 @@ const NEEDS_REVIEW_PULLS_URL: &str = "https://github.com/zed-industries/zed/pull
 pub(crate) enum ComplianceContext {
     Release { non_blocking_outcome: JobOutput },
     ReleaseNonBlocking,
-    Scheduled { tag_source: StepOutput },
-}
-
-impl ComplianceContext {
-    fn tag_source(&self) -> Option<&StepOutput> {
-        match self {
-            ComplianceContext::Scheduled { tag_source } => Some(tag_source),
-            _ => None,
-        }
-    }
 }
 
 pub(crate) fn add_compliance_steps(
@@ -210,24 +177,16 @@ pub(crate) fn add_compliance_steps(
     context: ComplianceContext,
 ) -> (gh_workflow::Job, StepOutput) {
     fn run_compliance_check(context: &ComplianceContext) -> (Step<Run>, StepOutput) {
-        let job = named::bash(
-            formatdoc! {r#"
+        let job = named::bash(formatdoc! {r#"
                 cargo xtask compliance version {target} --report-path "{COMPLIANCE_REPORT_PATH}"
                 "#,
-                target = if context.tag_source().is_some() { r#""$LATEST_TAG" --branch main"# } else { r#""$GITHUB_REF_NAME""# },
-            }
-        )
+            target = r#""$GITHUB_REF_NAME""#,
+        })
         .id(COMPLIANCE_STEP_ID)
         .add_env(("GITHUB_APP_ID", vars::ZED_ZIPPY_APP_ID))
         .add_env(("GITHUB_APP_KEY", vars::ZED_ZIPPY_APP_PRIVATE_KEY))
-        .when_some(context.tag_source(), |step, tag_source| {
-            step.add_env(("LATEST_TAG", tag_source.to_string()))
-        })
         .when(
-            matches!(
-                context,
-                ComplianceContext::Scheduled { .. } | ComplianceContext::ReleaseNonBlocking
-            ),
+            matches!(context, ComplianceContext::ReleaseNonBlocking),
             |step| step.continue_on_error(true),
         );
 
@@ -249,10 +208,6 @@ pub(crate) fn add_compliance_steps(
         ComplianceContext::ReleaseNonBlocking => (
             "✅ Compliance check passed",
             "❌ Preliminary compliance check failed (but this can still be fixed while the builds are running!)",
-        ),
-        ComplianceContext::Scheduled { .. } => (
-            "✅ Scheduled compliance check passed",
-            "⚠️ Scheduled compliance check failed",
         ),
     };
 
@@ -280,24 +235,14 @@ pub(crate) fn add_compliance_steps(
                 "${{{{ failure() || {prior_outcome} != 'success' }}}}",
                 prior_outcome = non_blocking_outcome.expr()
             )),
-            ComplianceContext::Scheduled { .. } | ComplianceContext::ReleaseNonBlocking => {
-                Expression::new("${{ always() }}")
-            }
+            ComplianceContext::ReleaseNonBlocking => Expression::new("${{ always() }}"),
         })
         .add_env(("SLACK_WEBHOOK", vars::SLACK_WEBHOOK_WORKFLOW_FAILURES))
         .add_env((
             "COMPLIANCE_OUTCOME",
             format!("${{{{ steps.{COMPLIANCE_STEP_ID}.outcome }}}}"),
         ))
-        .add_env((
-            "COMPLIANCE_TAG",
-            match &context {
-                ComplianceContext::Release { .. } | ComplianceContext::ReleaseNonBlocking => {
-                    Context::github().ref_name().to_string()
-                }
-                ComplianceContext::Scheduled { tag_source } => tag_source.to_string(),
-            },
-        ))
+        .add_env(("COMPLIANCE_TAG", Context::github().ref_name().to_string()))
         .add_env((
             "ARTIFACT_URL",
             format!("{CURRENT_ACTION_RUN_URL}#artifacts"),
@@ -656,53 +601,18 @@ pub(crate) fn push_release_update_notification(
     named::job(job)
 }
 
-pub(crate) fn notify_on_failure(deps: &[&NamedJob]) -> NamedJob {
-    let failure_message = format!("❌ ${{{{ github.workflow }}}} failed: {CURRENT_ACTION_RUN_URL}");
-
-    let mut job = dependant_job(deps)
-        .runs_on(runners::LINUX_SMALL)
-        .cond(Expression::new("failure()"));
-
-    for step in notify_slack(MessageType::Static(failure_message)) {
-        job = job.add_step(step);
-    }
-    named::job(job)
-}
-
 pub(crate) enum MessageType {
-    Static(String),
     Evaluated {
         script: String,
         env: Vec<(String, String)>,
     },
 }
 
-enum MessageSource {
-    String(String),
-    StepOutput(StepOutput),
-}
-
-impl MessageSource {
-    fn message(self) -> String {
-        match self {
-            MessageSource::String(string) => string,
-            MessageSource::StepOutput(output) => output.to_string(),
-        }
-    }
-}
-
 fn notify_slack(message: MessageType) -> Vec<Step<Run>> {
-    match message {
-        MessageType::Static(message) => vec![send_slack_message(MessageSource::String(message))],
-        MessageType::Evaluated { script, env } => {
-            let (generate_step, generated_message) = generate_slack_message(script, env);
+    let MessageType::Evaluated { script, env } = message;
+    let (generate_step, generated_message) = generate_slack_message(script, env);
 
-            vec![
-                generate_step,
-                send_slack_message(MessageSource::StepOutput(generated_message)),
-            ]
-        }
-    }
+    vec![generate_step, send_slack_message(generated_message)]
 }
 
 fn generate_slack_message(
@@ -727,15 +637,16 @@ fn generate_slack_message(
     (generate_step, output)
 }
 
-fn send_slack_message(message_source: MessageSource) -> Step<Run> {
+fn send_slack_message(generated_message: StepOutput) -> Step<Run> {
     named::bash(
         r#"curl -X POST -H 'Content-type: application/json' --data "$(jq -n --arg text "$SLACK_MESSAGE" '{"text": $text}')" "$SLACK_WEBHOOK""#
     )
-    .map(|this| match &message_source {
-        MessageSource::String(_) => this,
-        MessageSource::StepOutput(output) => this
-            .if_condition(Expression::new(format!("{message} != ''", message = output.expr()))),
+    .map(|this| {
+        this.if_condition(Expression::new(format!(
+            "{message} != ''",
+            message = generated_message.expr()
+        )))
     })
     .add_env(("SLACK_WEBHOOK", vars::SLACK_WEBHOOK_WORKFLOW_FAILURES))
-    .add_env(("SLACK_MESSAGE", message_source.message()))
+    .add_env(("SLACK_MESSAGE", generated_message.to_string()))
 }

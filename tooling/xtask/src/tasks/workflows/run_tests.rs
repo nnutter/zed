@@ -15,7 +15,6 @@ use crate::tasks::workflows::{
 };
 
 use super::{
-    deploy_docs,
     runners::{self, Arch, Platform},
     steps::{self, FluentBuilder, NamedJob, named, release_job},
 };
@@ -86,7 +85,7 @@ pub(crate) fn run_tests() -> Workflow {
         should_run_tests.and_always().then(check_dependencies()), // could be more specific here?
         should_check_docs
             .and_not_in_merge_queue()
-            .then(deploy_docs::check_docs()),
+            .then(check_docs()),
         should_check_licences
             .and_not_in_merge_queue()
             .then(check_licenses()),
@@ -931,4 +930,97 @@ fn extension_tests() -> NamedJob<UsesJob> {
         .with(Input::default().add("working-directory", "${{ matrix.extension }}"));
 
     named::job(job)
+}
+
+const BUILD_OUTPUT_DIR: &str = "target/deploy";
+
+pub(crate) enum DocsChannel {
+    Stable,
+}
+
+impl DocsChannel {
+    pub(crate) fn site_url(&self) -> &'static str {
+        match self {
+            Self::Stable => "/docs/",
+        }
+    }
+
+    pub(crate) fn channel_name(&self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+        }
+    }
+}
+
+fn lychee_link_check(dir: &str) -> Step<Use> {
+    named::uses(
+        "lycheeverse",
+        "lychee-action",
+        "82202e5e9c2f4ef1a55a3d02563e1cb6041e5332",
+    ) // v2.4.1
+    .add_with((
+        "args",
+        format!("--config .config/lychee.toml --no-progress --exclude '^http' '{dir}'"),
+    ))
+    .add_with(("fail", true))
+    .add_with(("jobSummary", false))
+}
+
+fn install_mdbook() -> Step<Use> {
+    named::uses(
+        "peaceiris",
+        "actions-mdbook",
+        "ee69d230fe19748b7abf22df32acaa93833fad08", // v2
+    )
+    .with(("mdbook-version", "0.4.37"))
+}
+
+fn build_docs_book(docs_channel: String, site_url: String) -> Step<Run> {
+    named::bash(indoc::formatdoc! {r#"
+        mkdir -p {BUILD_OUTPUT_DIR}
+        mdbook build ./docs --dest-dir=../{BUILD_OUTPUT_DIR}/docs/
+    "#})
+    .add_env(("DOCS_CHANNEL", docs_channel))
+    .add_env(("MDBOOK_BOOK__SITE_URL", site_url))
+}
+
+fn docs_build_steps(
+    job: Job,
+    checkout_ref: Option<String>,
+    docs_channel: impl Into<String>,
+    site_url: impl Into<String>,
+) -> Job {
+    let docs_channel = docs_channel.into();
+    let site_url = site_url.into();
+
+    steps::use_clang(
+        job.add_env(("DOCS_AMPLITUDE_API_KEY", vars::DOCS_AMPLITUDE_API_KEY))
+            .add_env(("DOCS_CONSENT_IO_INSTANCE", vars::DOCS_CONSENT_IO_INSTANCE))
+            .add_step(
+                steps::checkout_repo().when_some(checkout_ref, |step, checkout_ref| {
+                    step.with_ref(checkout_ref)
+                }),
+            )
+            .runs_on(runners::LINUX_XL)
+            .add_step(steps::setup_cargo_config(runners::Platform::Linux))
+            .add_step(steps::cache_rust_dependencies_namespace())
+            .map(steps::install_linux_dependencies)
+            .add_step(steps::script("./script/generate-action-metadata"))
+            .add_step(lychee_link_check("./docs/src/**/*"))
+            .add_step(install_mdbook())
+            .add_step(build_docs_book(docs_channel, site_url))
+            .add_step(lychee_link_check(&format!("{BUILD_OUTPUT_DIR}/docs"))),
+    )
+}
+
+fn check_docs() -> NamedJob {
+    NamedJob {
+        name: "check_docs".to_owned(),
+        job: docs_build_steps(
+            release_job(&[]).add_step(steps::harden_runner()),
+            None,
+            DocsChannel::Stable.channel_name(),
+            DocsChannel::Stable.site_url(),
+        ),
+    }
 }
