@@ -221,7 +221,7 @@ if [[ -n $pacman ]]; then
     jq
     git
   )
-  $maysudo "$pacman" -Syu --needed --noconfirm "${deps[@]}"
+  $maysudo "$pacman" -Sy --needed --noconfirm "${deps[@]}"
   finalize
   exit 0
 fi
