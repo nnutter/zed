@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+set -o xtrace
 
 CARGO_ABOUT_VERSION="0.8.2"
 OUTPUT_FILE="${1:-$(pwd)/assets/licenses.md}"
